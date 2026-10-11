@@ -1,0 +1,12 @@
+[package]
+name = "enclavectl"
+version = "0.1.0"
+edition = "2024"
+description = "Control an Enclave CineHome Smart Center over Bluetooth SPP"
+license = "Apache-2.0"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
