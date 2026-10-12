@@ -1,8 +1,5 @@
 //! Wire format of the Enclave CineHome Smart Center's remote-control protocol.
 //!
-//! Reverse-engineered from the official app (`com.enclaveaudio.app` 1.0.33) against
-//! firmware V152; see the Android implementation in `/build/enclave-android`.
-//!
 //! Every command is four bytes: `[cmd, value + 0x80, (cmd + value + 0x80) & 0xFF, b'\n']`.
 //! Status replies are 15 payload bytes, each `value + 0x80` in command order starting at
 //! [`Cmd::Power`], then a checksum (sum of the payload, truncated) and CRLF.
@@ -224,7 +221,7 @@ impl std::fmt::Display for Status {
 mod tests {
     use super::*;
 
-    /// A real status reply captured from firmware V152 while the unit was on.
+    /// A status reply from a unit that is on.
     const CAPTURED: [u8; STATUS_LEN] = [
         0x81, 0x81, 0x9b, 0x80, 0x83, 0x81, 0x80, 0x80, 0x80, 0x81, 0x80, 0x82, 0x84, 0x80, 0xbd,
         0xe5, 0x0d, 0x0a,

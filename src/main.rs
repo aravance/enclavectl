@@ -1,8 +1,7 @@
 //! `enclavectl` — control an Enclave CineHome Smart Center over Bluetooth.
 //!
-//! The unit does not answer HDMI-CEC while in standby (verified 2026-10-11: every CEC
-//! message to it was Not Acknowledged), so power has to come over Bluetooth. See
-//! `src/proto.rs` for the wire format.
+//! The unit does not answer HDMI-CEC while in standby, so power has to come over
+//! Bluetooth. See `src/proto.rs` for the wire format.
 
 mod link;
 mod proto;
