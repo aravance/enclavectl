@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use link::Link;
-use proto::{Cmd, Status, input_value};
+use proto::{Cmd, Status, cec_mode_value, input_value};
 
 const DEFAULT_ADDRESS: &str = "00:07:80:C4:46:09";
 const DEFAULT_CHANNEL: u8 = 1;
@@ -37,6 +37,7 @@ commands:
   mute <on|off>
   volume <0-127>
   input <hdmi1|hdmi2|hdmi3|optical|arc|bt>
+  cec <off|on|arc>
   raw <cmd> <value>      send any command number, for poking at undocumented settings
 
 options:
@@ -175,6 +176,12 @@ fn run(opts: &Opts) -> Result<ExitCode, String> {
             let name = arg.ok_or("input needs a source name")?;
             let value = input_value(name).ok_or_else(|| format!("unknown input: {name}"))?;
             set(&mut link, Cmd::Input, value)?;
+            report(&mut link, opts)
+        }
+        "cec" => {
+            let name = arg.ok_or("cec needs a mode name")?;
+            let value = cec_mode_value(name).ok_or_else(|| format!("unknown cec mode: {name}"))?;
+            set(&mut link, Cmd::CecMode, value)?;
             report(&mut link, opts)
         }
         "raw" => {

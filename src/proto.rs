@@ -77,6 +77,26 @@ pub fn input_value(name: &str) -> Option<u8> {
     }
 }
 
+/// How the unit takes part in HDMI-CEC. Values outside the known set are kept as-is.
+pub fn cec_mode_name(value: u8) -> &'static str {
+    match value {
+        0 => "off",
+        1 => "on",
+        2 => "ARC",
+        _ => "unknown",
+    }
+}
+
+/// Parses a CEC mode name back to its protocol value.
+pub fn cec_mode_value(name: &str) -> Option<u8> {
+    match name.to_ascii_lowercase().as_str() {
+        "off" => Some(0),
+        "on" => Some(1),
+        "arc" => Some(2),
+        _ => None,
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Status {
     pub power: u8,
@@ -139,8 +159,8 @@ impl Status {
             concat!(
                 r#"{{"power":{},"mute":{},"volume":{},"woofer":{},"center":{},"rear":{},"#,
                 r#""rear_balance":{},"rear_delay_l":{},"rear_delay_r":{},"pro_logic":{},"#,
-                r#""dynamic_range":{},"cec_mode":{},"input":{},"input_name":"{}","#,
-                r#""test_noise":{},"reset":{}}}"#
+                r#""dynamic_range":{},"cec_mode":{},"cec_mode_name":"{}","input":{},"#,
+                r#""input_name":"{}","test_noise":{},"reset":{}}}"#
             ),
             self.power,
             self.mute,
@@ -154,6 +174,7 @@ impl Status {
             self.pro_logic,
             self.dynamic_range,
             self.cec_mode,
+            cec_mode_name(self.cec_mode),
             self.input,
             input_name(self.input),
             self.test_noise,
@@ -182,7 +203,12 @@ impl std::fmt::Display for Status {
         )?;
         writeln!(f, "pro logic     {}", self.pro_logic)?;
         writeln!(f, "dynamic range {}", self.dynamic_range)?;
-        writeln!(f, "cec mode      {}", self.cec_mode)?;
+        writeln!(
+            f,
+            "cec mode      {} ({})",
+            self.cec_mode,
+            cec_mode_name(self.cec_mode)
+        )?;
         writeln!(
             f,
             "input         {} ({})",
@@ -213,6 +239,7 @@ mod tests {
         assert_eq!(s.input, 4);
         assert_eq!(input_name(s.input), "aux/ARC");
         assert_eq!(s.cec_mode, 2);
+        assert_eq!(cec_mode_name(s.cec_mode), "ARC");
         assert_eq!(s.center, 3);
     }
 
@@ -261,5 +288,13 @@ mod tests {
             assert_eq!(input_value(name), Some(value));
         }
         assert_eq!(input_value("nope"), None);
+    }
+
+    #[test]
+    fn cec_mode_names_round_trip() {
+        for (name, value) in [("off", 0), ("on", 1), ("arc", 2)] {
+            assert_eq!(cec_mode_value(name), Some(value));
+        }
+        assert_eq!(cec_mode_value("nope"), None);
     }
 }
