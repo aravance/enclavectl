@@ -59,7 +59,7 @@ struct Opts {
     args: Vec<String>,
 }
 
-fn parse_opts() -> Result<Opts, String> {
+fn parse_opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     let mut opts = Opts {
         address: std::env::var("ENCLAVE_ADDR").unwrap_or_else(|_| DEFAULT_ADDRESS.to_string()),
         channel: DEFAULT_CHANNEL,
@@ -67,34 +67,47 @@ fn parse_opts() -> Result<Opts, String> {
         quiet: false,
         args: Vec::new(),
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
+        // An option's value may also be attached: `--address=<mac>` or `-a<mac>`.
+        let (name, attached) = match arg.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name, Some(value)),
+            _ if arg.len() > 2 && (arg.starts_with("-a") || arg.starts_with("-c")) => {
+                let (name, value) = arg.split_at(2);
+                (name, Some(value))
+            }
+            _ => (arg.as_str(), None),
+        };
+        let mut value = |what: &str| {
+            attached
+                .map(str::to_string)
+                .or_else(|| it.next())
+                .ok_or(format!("{what} needs a value"))
+        };
+        match name {
+            "-h" | "--help" if attached.is_none() => {
                 print!("{USAGE}");
                 std::process::exit(0);
             }
-            "--json" => opts.json = true,
-            "-q" | "--quiet" => opts.quiet = true,
-            "-a" | "--address" => {
-                opts.address = it.next().ok_or("--address needs a value")?;
-            }
+            "--json" if attached.is_none() => opts.json = true,
+            "-q" | "--quiet" if attached.is_none() => opts.quiet = true,
+            "-a" | "--address" => opts.address = value("--address")?,
             "-c" | "--channel" => {
-                let v = it.next().ok_or("--channel needs a value")?;
+                let v = value("--channel")?;
                 opts.channel = v.parse().map_err(|_| format!("bad channel: {v}"))?;
             }
             // A negative number is a level value for `raw`, not an option.
             other if other.starts_with('-') && other.parse::<i16>().is_err() => {
-                return Err(format!("unknown option: {other}"));
+                return Err(format!("unknown option: {arg}"));
             }
-            other => opts.args.push(other.to_string()),
+            _ => opts.args.push(arg.clone()),
         }
     }
     Ok(opts)
 }
 
 fn main() -> ExitCode {
-    let opts = match parse_opts() {
+    let opts = match parse_opts(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("enclavectl: {e}\n");
@@ -298,5 +311,47 @@ fn numeric(arg: Option<&str>, what: &str) -> Result<u8, String> {
 fn note(opts: &Opts, msg: &str) {
     if !opts.quiet {
         eprintln!("enclavectl: {msg}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Opts, String> {
+        parse_opts(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn option_values_may_be_separate_or_attached() {
+        for args in [
+            &["-a", "00:07:80:00:00:01", "-c", "2", "status"][..],
+            &["--address", "00:07:80:00:00:01", "--channel", "2", "status"],
+            &["--address=00:07:80:00:00:01", "--channel=2", "status"],
+            &["-a00:07:80:00:00:01", "-c2", "status"],
+        ] {
+            let opts = parse(args).unwrap();
+            assert_eq!(opts.address, "00:07:80:00:00:01", "{args:?}");
+            assert_eq!(opts.channel, 2, "{args:?}");
+            assert_eq!(opts.args, ["status"], "{args:?}");
+        }
+    }
+
+    #[test]
+    fn flags_take_no_value() {
+        assert!(parse(&["--json=1", "status"]).is_err());
+        assert!(parse(&["-qa", "status"]).is_err());
+    }
+
+    #[test]
+    fn negative_numbers_are_arguments() {
+        let opts = parse(&["raw", "148", "-3"]).unwrap();
+        assert_eq!(opts.args, ["raw", "148", "-3"]);
+    }
+
+    #[test]
+    fn missing_values_are_reported() {
+        assert_eq!(parse(&["-a"]).err().unwrap(), "--address needs a value");
+        assert_eq!(parse(&["--channel="]).err().unwrap(), "bad channel: ");
     }
 }
