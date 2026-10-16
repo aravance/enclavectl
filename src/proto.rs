@@ -1,10 +1,13 @@
 //! Wire format of the Enclave CineHome Smart Center's remote-control protocol.
 //!
 //! Every command is four bytes: `[cmd, value + 0x80, (cmd + value + 0x80) & 0xFF, b'\n']`.
-//! Status replies are 15 payload bytes, each `value + 0x80` in command order starting at
-//! [`Cmd::Power`], then a checksum (sum of the payload, truncated) and CRLF.
+//! Status replies are 15 payload bytes, then a checksum (sum of the payload, truncated) and
+//! CRLF. The first thirteen bytes are `value + 0x80` in command order from [`Cmd::Power`]
+//! to [`Cmd::Input`]; the last two report other state, see [`Status::decode`].
+//!
+//! Level values (woofer, center, rear, rear balance) are signed: -3 goes out as `0x7d`.
 
-/// Command numbers. The status payload carries these in order, starting at `Power`.
+/// Command numbers. The status payload carries `Power` through `Input` in order.
 ///
 /// The variants we never send are kept deliberately: together they document the device's
 /// whole command set, and `enclavectl raw` can reach any of them by number.
@@ -36,6 +39,12 @@ const PAYLOAD_LEN: usize = 15;
 
 /// A value of 0 is encoded as 0x80, so that is what "off" looks like in `power`.
 const BIAS: u8 = 0x80;
+/// Set in the input byte of a status reply while the test noise sequence runs.
+const TEST_NOISE_FLAG: u8 = 0x10;
+/// CEC byte of a status reply when the mode is ARC and the ARC link is up. Never sent.
+const CEC_ARC_ACTIVE: u8 = 3;
+/// Bit order of the detected-speakers byte in a status reply.
+const SPEAKERS: [&str; 7] = ["L", "R", "LS", "RS", "C", "Sub1", "Sub2"];
 
 pub fn frame(cmd: Cmd, value: u8) -> [u8; 4] {
     frame_raw(cmd as u8, value)
@@ -94,27 +103,66 @@ pub fn cec_mode_value(name: &str) -> Option<u8> {
     }
 }
 
+pub fn pro_logic_name(value: u8) -> &'static str {
+    match value {
+        0 => "off",
+        1 => "auto",
+        2 => "movie",
+        3 => "music",
+        _ => "unknown",
+    }
+}
+
+pub fn dynamic_range_name(value: u8) -> &'static str {
+    match value {
+        0 => "standard",
+        1 => "minimum",
+        2 => "maximum",
+        _ => "unknown",
+    }
+}
+
+/// Format of the incoming audio stream, as reported in a status reply.
+pub fn stream_type_name(value: u8) -> &'static str {
+    match value {
+        0 => "PCM",
+        1 => "Dolby Digital Plus",
+        2 => "Dolby Digital",
+        3 => "DTS",
+        _ => "unknown",
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Status {
     pub power: u8,
     pub mute: u8,
     pub volume: u8,
-    pub woofer: u8,
-    pub center: u8,
-    pub rear: u8,
-    pub rear_balance: u8,
+    pub woofer: i8,
+    pub center: i8,
+    pub rear: i8,
+    pub rear_balance: i8,
     pub rear_delay_l: u8,
     pub rear_delay_r: u8,
     pub pro_logic: u8,
     pub dynamic_range: u8,
     pub cec_mode: u8,
+    /// The CEC mode is ARC and the ARC link is actually up.
+    /// Output only: there is no command value that sets it.
+    pub arc_active: bool,
     pub input: u8,
-    pub test_noise: u8,
-    pub reset: u8,
+    pub test_noise: bool,
+    pub stream_type: u8,
+    /// Detected speakers, one bit each in [`SPEAKERS`] order.
+    pub speakers: u8,
 }
 
 impl Status {
     /// Decodes a status reply, returning `None` if it is short or the checksum disagrees.
+    ///
+    /// Bytes 0–12 are `value + 0x80` in command order, except that a CEC value of 3 means
+    /// ARC mode with the link up, and the input byte also carries the test-noise flag.
+    /// Byte 13 is the stream type in its low two bits and byte 14 the detected speakers.
     ///
     /// Note that a powered-down unit does not reply at all, so absence of a status —
     /// rather than a status saying "off" — is the usual way to learn it is in standby.
@@ -128,22 +176,26 @@ impl Status {
             return None;
         }
         let v = |i: usize| payload[i].wrapping_sub(BIAS);
+        let level = |i: usize| v(i) as i8;
+        let cec = v(11);
         Some(Self {
             power: v(0),
             mute: v(1),
             volume: v(2),
-            woofer: v(3),
-            center: v(4),
-            rear: v(5),
-            rear_balance: v(6),
+            woofer: level(3),
+            center: level(4),
+            rear: level(5),
+            rear_balance: level(6),
             rear_delay_l: v(7),
             rear_delay_r: v(8),
             pro_logic: v(9),
             dynamic_range: v(10),
-            cec_mode: v(11),
-            input: v(12),
-            test_noise: v(13),
-            reset: v(14),
+            cec_mode: if cec == CEC_ARC_ACTIVE { 2 } else { cec },
+            arc_active: cec == CEC_ARC_ACTIVE,
+            input: (payload[12] & !TEST_NOISE_FLAG).wrapping_sub(BIAS),
+            test_noise: payload[12] & TEST_NOISE_FLAG != 0,
+            stream_type: payload[13] & 0x03,
+            speakers: payload[14] & 0x7f,
         })
     }
 
@@ -151,13 +203,27 @@ impl Status {
         self.power != 0
     }
 
+    /// Names of the detected speakers, e.g. `["L", "R", "C"]`.
+    pub fn speaker_names(&self) -> impl Iterator<Item = &'static str> {
+        let speakers = self.speakers;
+        SPEAKERS
+            .iter()
+            .enumerate()
+            .filter(move |(bit, _)| speakers & (1 << bit) != 0)
+            .map(|(_, name)| *name)
+    }
+
     pub fn to_json(self) -> String {
+        let speakers: Vec<String> = self.speaker_names().map(|n| format!(r#""{n}""#)).collect();
         format!(
             concat!(
                 r#"{{"power":{},"mute":{},"volume":{},"woofer":{},"center":{},"rear":{},"#,
-                r#""rear_balance":{},"rear_delay_l":{},"rear_delay_r":{},"pro_logic":{},"#,
-                r#""dynamic_range":{},"cec_mode":{},"cec_mode_name":"{}","input":{},"#,
-                r#""input_name":"{}","test_noise":{},"reset":{}}}"#
+                r#""rear_balance":{},"rear_delay_l":{},"rear_delay_r":{},"#,
+                r#""pro_logic":{},"pro_logic_name":"{}","#,
+                r#""dynamic_range":{},"dynamic_range_name":"{}","#,
+                r#""cec_mode":{},"cec_mode_name":"{}","arc_active":{},"#,
+                r#""input":{},"input_name":"{}","test_noise":{},"#,
+                r#""stream_type":{},"stream_type_name":"{}","speakers":[{}]}}"#
             ),
             self.power,
             self.mute,
@@ -169,13 +235,18 @@ impl Status {
             self.rear_delay_l,
             self.rear_delay_r,
             self.pro_logic,
+            pro_logic_name(self.pro_logic),
             self.dynamic_range,
+            dynamic_range_name(self.dynamic_range),
             self.cec_mode,
             cec_mode_name(self.cec_mode),
+            self.arc_active,
             self.input,
             input_name(self.input),
             self.test_noise,
-            self.reset,
+            self.stream_type,
+            stream_type_name(self.stream_type),
+            speakers.join(","),
         )
     }
 }
@@ -198,13 +269,24 @@ impl std::fmt::Display for Status {
             "rear delay    {} / {}",
             self.rear_delay_l, self.rear_delay_r
         )?;
-        writeln!(f, "pro logic     {}", self.pro_logic)?;
-        writeln!(f, "dynamic range {}", self.dynamic_range)?;
         writeln!(
             f,
-            "cec mode      {} ({})",
+            "pro logic     {} ({})",
+            self.pro_logic,
+            pro_logic_name(self.pro_logic)
+        )?;
+        writeln!(
+            f,
+            "dynamic range {} ({})",
+            self.dynamic_range,
+            dynamic_range_name(self.dynamic_range)
+        )?;
+        writeln!(
+            f,
+            "cec mode      {} ({}{})",
             self.cec_mode,
-            cec_mode_name(self.cec_mode)
+            cec_mode_name(self.cec_mode),
+            if self.arc_active { ", active" } else { "" }
         )?;
         writeln!(
             f,
@@ -212,8 +294,17 @@ impl std::fmt::Display for Status {
             self.input,
             input_name(self.input)
         )?;
-        writeln!(f, "test noise    {}", self.test_noise)?;
-        write!(f, "reset         {}", self.reset)
+        writeln!(f, "stream        {}", stream_type_name(self.stream_type))?;
+        writeln!(
+            f,
+            "speakers      {}",
+            self.speaker_names().collect::<Vec<_>>().join(" ")
+        )?;
+        write!(
+            f,
+            "test noise    {}",
+            if self.test_noise { "on" } else { "off" }
+        )
     }
 }
 
@@ -237,7 +328,52 @@ mod tests {
         assert_eq!(input_name(s.input), "aux/ARC");
         assert_eq!(s.cec_mode, 2);
         assert_eq!(cec_mode_name(s.cec_mode), "ARC");
+        assert!(!s.arc_active);
         assert_eq!(s.center, 3);
+        assert_eq!(pro_logic_name(s.pro_logic), "auto");
+        assert!(!s.test_noise);
+        assert_eq!(stream_type_name(s.stream_type), "PCM");
+        assert_eq!(
+            s.speaker_names().collect::<Vec<_>>(),
+            ["L", "LS", "RS", "C", "Sub1"]
+        );
+    }
+
+    /// `CAPTURED` with the given payload bytes replaced and the checksum redone.
+    fn captured_with(changes: &[(usize, u8)]) -> [u8; STATUS_LEN] {
+        let mut buf = CAPTURED;
+        for &(i, b) in changes {
+            buf[i] = b;
+        }
+        buf[PAYLOAD_LEN] = buf[..PAYLOAD_LEN]
+            .iter()
+            .fold(0u8, |acc, b| acc.wrapping_add(*b));
+        buf
+    }
+
+    #[test]
+    fn levels_are_signed() {
+        let s = Status::decode(&captured_with(&[(3, 0x76), (4, 0x7d)])).unwrap();
+        assert_eq!(s.woofer, -10);
+        assert_eq!(s.center, -3);
+        assert_eq!(
+            frame_raw(Cmd::Center as u8, -3i8 as u8),
+            [0x94, 0x7d, 0x11, b'\n']
+        );
+    }
+
+    #[test]
+    fn test_noise_flag_leaves_input_intact() {
+        let s = Status::decode(&captured_with(&[(12, 0x84 | 0x10)])).unwrap();
+        assert!(s.test_noise);
+        assert_eq!(s.input, 4);
+    }
+
+    #[test]
+    fn cec_three_is_arc_with_the_link_up() {
+        let s = Status::decode(&captured_with(&[(11, 0x83)])).unwrap();
+        assert_eq!(s.cec_mode, 2);
+        assert!(s.arc_active);
     }
 
     #[test]

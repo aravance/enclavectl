@@ -23,6 +23,8 @@ const RETRY_PAUSE: Duration = Duration::from_secs(2);
 const PRECHECK_WINDOW: Duration = Duration::from_millis(1500);
 const PRECHECK_TRIES: u32 = 3;
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(25);
+/// The top of the official app's volume slider.
+const MAX_VOLUME: u8 = 60;
 
 const USAGE: &str = "\
 enclavectl — control an Enclave CineHome over Bluetooth
@@ -34,10 +36,10 @@ commands:
   on                     power on, if not on already
   off                    power off
   mute <on|off>
-  volume <0-127>
+  volume <0-60>
   input <hdmi1|hdmi2|hdmi3|optical|arc|bt>
   cec <off|on|arc>
-  raw <cmd> <value>      send any command number, for poking at undocumented settings
+  raw <cmd> <value>      send any command number and value (levels may be negative)
 
 options:
   -a, --address <mac>    default: $ENCLAVE_ADDR, else 00:07:80:C4:46:09
@@ -81,7 +83,10 @@ fn parse_opts() -> Result<Opts, String> {
                 let v = it.next().ok_or("--channel needs a value")?;
                 opts.channel = v.parse().map_err(|_| format!("bad channel: {v}"))?;
             }
-            other if other.starts_with('-') => return Err(format!("unknown option: {other}")),
+            // A negative number is a level value for `raw`, not an option.
+            other if other.starts_with('-') && other.parse::<i16>().is_err() => {
+                return Err(format!("unknown option: {other}"));
+            }
             other => opts.args.push(other.to_string()),
         }
     }
@@ -168,6 +173,9 @@ fn run(opts: &Opts) -> Result<ExitCode, String> {
         }
         "volume" => {
             let value = numeric(arg, "volume")?;
+            if value > MAX_VOLUME {
+                return Err(format!("bad volume: {value} (expected 0-{MAX_VOLUME})"));
+            }
             set(&mut link, Cmd::Volume, value)?;
             report(&mut link, opts)
         }
@@ -185,9 +193,14 @@ fn run(opts: &Opts) -> Result<ExitCode, String> {
         }
         "raw" => {
             let number = numeric(arg, "cmd")?;
-            let value = numeric(opts.args.get(2).map(String::as_str), "value")?;
+            let raw = opts.args.get(2).ok_or("raw needs a value")?;
+            let value = match raw.parse::<i16>() {
+                // Negative levels go out as their two's complement.
+                Ok(v @ -128..=255) => v as u8,
+                _ => return Err(format!("bad value: {raw} (expected -128 to 255)")),
+            };
             link.send_raw(number, value).map_err(|e| e.to_string())?;
-            note(opts, &format!("sent raw cmd {number} value {value}"));
+            note(opts, &format!("sent raw cmd {number} value {raw}"));
             report(&mut link, opts)
         }
         other => Err(format!("unknown command: {other}")),
@@ -279,7 +292,7 @@ fn report(link: &mut Link, opts: &Opts) -> Result<ExitCode, String> {
 fn numeric(arg: Option<&str>, what: &str) -> Result<u8, String> {
     let raw = arg.ok_or_else(|| format!("{what} needs a value"))?;
     raw.parse()
-        .map_err(|_| format!("bad {what}: {raw} (expected 0-127)"))
+        .map_err(|_| format!("bad {what}: {raw} (expected 0-255)"))
 }
 
 fn note(opts: &Opts, msg: &str) {
