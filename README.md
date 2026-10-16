@@ -23,6 +23,8 @@ Exit codes: `0` ok · `1` unreachable · `2` off or unconfirmed · `3` bad usage
 ```sh
 cargo build --release
 install -m 755 target/release/enclavectl /usr/local/bin/
+install -Dm 644 completions/enclavectl.bash /usr/local/share/bash-completion/completions/enclavectl
+install -Dm 644 completions/_enclavectl /usr/local/share/zsh/site-functions/_enclavectl
 ```
 
 No root or group membership is needed at runtime.

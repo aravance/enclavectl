@@ -1,0 +1,57 @@
+#compdef enclavectl
+
+local curcontext=$curcontext state line
+local -a commands
+
+commands=(
+  'status:report the current state'
+  'on:power on, if not on already'
+  'off:power off'
+  'mute:mute or unmute'
+  'volume:set the master volume (0-60)'
+  'input:select the input'
+  'cec:set the HDMI-CEC mode'
+  'raw:send any command number and value'
+)
+
+_arguments -C \
+  '(-a --address)'{-a+,--address=}'[Bluetooth address (default $ENCLAVE_ADDR)]:address:' \
+  '(-c --channel)'{-c+,--channel=}'[RFCOMM channel (default 1)]:channel:' \
+  '--json[machine-readable status]' \
+  '(-q --quiet)'{-q,--quiet}'[suppress progress messages on stderr]' \
+  '(- *)'{-h,--help}'[show help]' \
+  '1:command:->command' \
+  '*::argument:->argument' && return
+
+case $state in
+  command)
+    _describe -t commands command commands
+    ;;
+  argument)
+    (( CURRENT == 2 )) || return 1
+    case $words[1] in
+      mute)
+        _values state on off
+        ;;
+      volume)
+        _message 'volume (0-60)'
+        ;;
+      input)
+        _values input \
+          'hdmi1[HDMI 1]' 'hdmi2[HDMI 2]' 'hdmi3[HDMI 3]' \
+          'optical[optical]' 'arc[aux/ARC]' 'bt[Bluetooth]'
+        ;;
+      cec)
+        _values 'CEC mode' 'off[CEC disabled]' 'on[CEC enabled]' 'arc[CEC with ARC]'
+        ;;
+      raw)
+        _values 'command number' \
+          '144[power]' '145[mute]' '146[master volume]' '147[woofer]' \
+          '148[center]' '149[rear]' '150[rear balance]' '151[rear delay L]' \
+          '152[rear delay R]' '153[Pro Logic]' '154[dynamic range]' \
+          '155[CEC mode]' '156[input]' '157[test noise]' '158[reset speakers]' \
+          '159[status request]'
+        ;;
+    esac
+    ;;
+esac
